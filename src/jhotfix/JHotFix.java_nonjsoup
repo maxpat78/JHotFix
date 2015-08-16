@@ -1,0 +1,162 @@
+package jhotfix;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.URL;
+import java.net.URLConnection;
+import java.util.Date;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class JHotFix {
+
+	public static boolean downloadFromUrl(URL url, String localFilename) throws IOException {
+		InputStream is = null;
+		FileOutputStream fos = null;
+        String userAgent = "Mozilla/5.0 (Windows NT 6.1; rv:21.0) Gecko/20130401 Firefox/21.0";
+
+		try {
+			URLConnection urlConn = url.openConnection();
+			
+			if (userAgent != null) {
+			    urlConn.setRequestProperty("User-Agent", userAgent);
+			}
+
+			is = urlConn.getInputStream();
+
+			fos = new FileOutputStream(localFilename);
+			
+			byte[] buffer = new byte[4096];
+			int len;
+
+			while ((len = is.read(buffer)) > 0) {
+                fos.write(buffer, 0, len);
+            }
+        } finally {
+        	try {
+        		if (is != null) {
+        			is.close();
+        		}
+        	} finally {
+        		if (fos != null) {
+        			fos.close();
+        		} else
+        			return false;
+        	}
+        }
+		
+		return true;
+	}
+
+
+	public static void main(String[] args) throws IOException {
+		// Query di ricerca dal sito Microsoft Update (restituisce 10 risultati alla volta)
+		String windows_query = "http://www.microsoft.com/it-it/search/DownloadResults.aspx?q=windows+8.1&sortby=-availabledate&First=%d&ftapplicableproducts=AllDownloads";
+		String office_query = "http://www.microsoft.com/it-it/search/DownloadResults.aspx?q=office+2013&First=%d&ftapplicableproducts=Office&sortby=-availabledate";
+		String query = windows_query;
+		String lastKB = null;
+		
+		// Modelli di descrizione di Hotfix per Windows 8.1
+		// title="Aggiornamento per Windows 8.1 (KB2938066)" href="http://www.microsoft.com/it-it/download/details.aspx?id=43468"
+		// Aggiornamento della protezione per Windows 8.1 (KB2978742)
+		// Pacchetto cumulativo di aggiornamenti della sicurezza per Internet Explorer 11 per Windows 8.1 x64 (KB2976627)
+		// 	
+		// !!! ATTENZIONE !!! PERIODICAMENTE PUO' ESSERE MODIFICATO!
+		// group(1): titolo  group(2): hyperlink
+		Pattern windows_rx = Pattern.compile("title=\"(Aggiornamento .+?Windows 8.1.+?KB\\d+\\)|Pacchetto.+?Explorer 11 per Windows 8.1.+?KB\\d+\\)|Aggiornamento.+?Server 2012 R2)\" href=.+?(http://www\\.microsoft\\.com/it-it/download/details\\.aspx\\?id=\\d+)");
+		Pattern office_rx = Pattern.compile("title=\"(Aggiornamento .+?KB\\d+\\) Edizione a 32 bit)\" href=.+?(http://www.microsoft.com/it-it/download/details.aspx\\?id=\\d+)");
+		Pattern pattern = windows_rx;
+		
+		Pattern link_rx = Pattern.compile("url:\"(http://download.microsoft.com/download.+?(msu|exe))\"");
+
+		for (String r: args) {
+			if (r.startsWith("KB"))
+				lastKB = r;
+			if ("-office".equals(r)) {
+				query = office_query;
+				pattern = office_rx;
+			}
+		}
+
+//		// Se la riga di comando contiene -office ...
+//		if (Arrays.asList(args).contains("-office")) {
+//			query = office_query;
+//			pattern = office_rx;
+//		}
+		
+//		// Java 8: lambda e tecniche funzionali
+//		try {
+//			lastKB = Arrays.asList(args).stream()
+//					.filter((s) -> s.startsWith("KB"))
+//					.findFirst()
+//					.get();
+//		} catch (NoSuchElementException e) {
+//			
+//		}
+		
+	
+		int curPage = 1;
+		int downloads = 0;
+		int bytes_downloaded = 0;
+		Date start = new Date();
+Main_Loop:
+		while (true) {
+			URL url = new URL(String.format(query, curPage));
+			curPage += 10;
+			System.out.println("Interrogo "+url.toString());
+			
+			// Esamina la pagina dei risultati
+			BufferedReader in = new BufferedReader(new InputStreamReader(url.openStream()));
+			String line = null;
+			while((line = in.readLine()) != null) {
+				Matcher m = pattern.matcher(line);
+				if (m.find()) {
+					System.out.println("Trovato "+m.group(1));
+					if (lastKB != null && m.group(1).contains(lastKB)) {
+						System.out.println("Raggiunto l'ultimo KB, esco...");
+						break Main_Loop;
+					}
+					// Apre la pagina di conferma del download
+					URL url2 = new URL(m.group(2).replace("details.aspx", "confirmation.aspx"));
+					BufferedReader in2 = new BufferedReader(new InputStreamReader(url2.openStream()));
+					String line2 = null;
+					while((line2 = in2.readLine()) != null) {
+						// Identifica il link del pacchetto e lo scarica
+						Matcher m2 = link_rx.matcher(line2);
+						if (m2.find()) {
+							URL url3 = new URL(m2.group(1));
+							// Ricava il nome del pacchetto da scaricare nella cartella corrente
+							String f = new File(url3.getHost() + url3.getPath()).getName();
+							System.out.print("Download di "+f+"... ");
+							// Se esiste, continua 
+							if (new File(f).exists()) {
+								System.out.println("annullato, già esiste.");
+								continue;
+							}
+							// Inserire un loop while per tentare 2-3 volte?
+							try {
+								downloadFromUrl(url3, f);
+							}
+							catch (IOException e) {
+								System.out.println("fallito!");
+								continue;
+							}
+							System.out.println("ok.");
+							downloads++;
+							bytes_downloaded += new File(f).length();
+						}
+					}
+				}
+			}
+		}
+		Date stop = new Date();
+		long x = (stop.getTime()-start.getTime())/1000;
+		System.out.println(String.format("Scaricati %d file (%d byte) in %d secondi @%.02f KiB/s.",
+				downloads, bytes_downloaded, x, bytes_downloaded/1024.0/x));
+	}
+
+}

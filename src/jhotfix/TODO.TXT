@@ -1,0 +1,3 @@
+organizzare i download in cartelle appropriate?
+retry del download pacchetto se fallito?
+linea di comando più articolata, ed help on line?
